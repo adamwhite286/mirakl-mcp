@@ -28,17 +28,19 @@ get_account · list_orders · get_order · accept_or_refuse_order · set_order_t
 
 Matching key is the SKU (`variant.sku` == `offer.shop_sku`). Only offers that already exist on B&Q are updated – the sync never creates listings.
 
-### Shopify custom app
-Shopify admin → Settings → Apps and sales channels → Develop apps → Create app → Configure Admin API scopes:
-`read_products, read_inventory, read_orders, write_orders, read_fulfillments, read_locations, write_webhooks`.
-Install, then copy the **Admin API access token** → `SHOPIFY_ACCESS_TOKEN` and the **API secret key** → `SHOPIFY_API_SECRET`.
+### Shopify app (Dev Dashboard)
+Legacy custom apps can no longer be created (Jan 2026). Instead: https://dev.shopify.com → Apps → Create app →
+Configuration → Admin API access scopes: `read_products, read_inventory, read_orders, write_orders, read_fulfillments, read_locations, write_webhooks`
+→ Save → Install on the store → copy **Client ID** → `SHOPIFY_CLIENT_ID` and **Client secret** → `SHOPIFY_CLIENT_SECRET`.
+The server exchanges these for 24-hour Admin API tokens itself (client-credentials grant) and uses the secret to verify webhooks.
 
 ### Extra env vars
 | var | purpose |
 |---|---|
 | `SHOPIFY_SHOP` | `hneqs0-f9.myshopify.com` |
-| `SHOPIFY_ACCESS_TOKEN` | custom app Admin API token |
-| `SHOPIFY_API_SECRET` | custom app API secret (webhook HMAC) |
+| `SHOPIFY_CLIENT_ID` / `SHOPIFY_CLIENT_SECRET` | Dev Dashboard app credentials (preferred) |
+| `SHOPIFY_ACCESS_TOKEN` | legacy custom-app token (alternative) |
+| `SHOPIFY_API_SECRET` | webhook HMAC key; defaults to the client secret |
 | `PUBLIC_URL` | `https://mirakl-mcp.onrender.com` |
 | `SYNC_INTERVAL_MIN` | default 5 |
 | `AUTO_ACCEPT_ORDERS` | default true |

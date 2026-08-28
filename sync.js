@@ -10,8 +10,10 @@
 //
 // Env vars:
 //   SHOPIFY_SHOP            e.g. hneqs0-f9.myshopify.com
-//   SHOPIFY_ACCESS_TOKEN    Admin API access token of a custom app (see README for scopes)
-//   SHOPIFY_API_SECRET      the custom app's API secret key – used to verify webhook HMACs
+//   SHOPIFY_CLIENT_ID +     Dev Dashboard app credentials – the server exchanges them for
+//   SHOPIFY_CLIENT_SECRET   short-lived Admin API tokens (client-credentials grant). Preferred.
+//   SHOPIFY_ACCESS_TOKEN    alternatively, a legacy custom-app Admin API token
+//   SHOPIFY_API_SECRET      webhook HMAC key (defaults to SHOPIFY_CLIENT_SECRET)
 //   PUBLIC_URL              this service's public URL, e.g. https://mirakl-mcp.onrender.com
 //   SYNC_INTERVAL_MIN       reconciliation / order poll interval (default 5)
 //   AUTO_ACCEPT_ORDERS      "true" (default) to accept WAITING_ACCEPTANCE orders automatically
@@ -23,8 +25,10 @@
 import crypto from 'node:crypto';
 
 const SHOP = process.env.SHOPIFY_SHOP;
-const TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
-const SECRET = process.env.SHOPIFY_API_SECRET;
+const STATIC_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;           // legacy custom app token (optional)
+const CLIENT_ID = process.env.SHOPIFY_CLIENT_ID;                  // Dev Dashboard app (preferred)
+const CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET;
+const SECRET = process.env.SHOPIFY_API_SECRET || CLIENT_SECRET;   // webhook HMAC key
 const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const INTERVAL_MS = Number(process.env.SYNC_INTERVAL_MIN || 5) * 60 * 1000;
 const AUTO_ACCEPT = (process.env.AUTO_ACCEPT_ORDERS || 'true') === 'true';
@@ -34,7 +38,7 @@ const API_VERSION = '2025-07';
 const TAG_ALL = 'B&Q';
 const TAG_PREFIX = 'BQ-';
 
-export const enabled = Boolean(SHOP && TOKEN);
+export const enabled = Boolean(SHOP && (STATIC_TOKEN || (CLIENT_ID && CLIENT_SECRET)));
 
 // ---------- activity log (in-memory ring buffer, surfaced via sync_status) ----------
 const LOG_MAX = 200;
@@ -51,11 +55,27 @@ function note(level, msg, extra) {
 export const recentLog = (n = 50) => log.slice(-n);
 
 // ---------- Shopify Admin GraphQL ----------
+const shopBase = () => (SHOP.startsWith('http') ? SHOP : `https://${SHOP}`); // http form only for local testing
+
+// Client-credentials grant: tokens last 24h; refresh a few minutes early.
+let tokenCache = { value: STATIC_TOKEN || null, expiresAt: STATIC_TOKEN ? Infinity : 0 };
+async function accessToken() {
+  if (tokenCache.value && Date.now() < tokenCache.expiresAt) return tokenCache.value;
+  const res = await fetch(`${shopBase()}/admin/oauth/access_token`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, grant_type: 'client_credentials' })
+  });
+  const d = await res.json();
+  if (!res.ok || !d.access_token) throw new Error(`Shopify token exchange failed: ${JSON.stringify(d)}`);
+  tokenCache = { value: d.access_token, expiresAt: Date.now() + Math.max(60, (d.expires_in || 86400) - 300) * 1000 };
+  note('info', 'Obtained Shopify access token via client credentials');
+  return d.access_token;
+}
+
 async function gql(query, variables = {}) {
-  const base = SHOP.startsWith('http') ? SHOP : `https://${SHOP}`; // http form only for local testing
-  const res = await fetch(`${base}/admin/api/${API_VERSION}/graphql.json`, {
+  const res = await fetch(`${shopBase()}/admin/api/${API_VERSION}/graphql.json`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': TOKEN },
+    headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': await accessToken() },
     body: JSON.stringify({ query, variables })
   });
   const data = await res.json();
@@ -318,7 +338,7 @@ export async function runAll(trigger = 'timer') {
 }
 
 export function start() {
-  if (!enabled) { note('warn', 'Shopify sync disabled – set SHOPIFY_SHOP and SHOPIFY_ACCESS_TOKEN'); return; }
+  if (!enabled) { note('warn', 'Shopify sync disabled – set SHOPIFY_SHOP plus SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET (or SHOPIFY_ACCESS_TOKEN)'); return; }
   note('info', `Shopify sync enabled for ${SHOP}; every ${INTERVAL_MS / 60000} min; auto-accept=${AUTO_ACCEPT}; dryRun=${DRY_RUN}`);
   ensureWebhooks().catch(e => note('error', `ensureWebhooks: ${e.message}`));
   setTimeout(() => runAll('startup'), 5000);

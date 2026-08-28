@@ -6,6 +6,7 @@ const variants = [
   { id: 'gid://shopify/ProductVariant/2', sku: 'IM/00FRED10WHITE', price: '150.00', inventoryQuantity: 0, inventoryItem: { id: 'gid://shopify/InventoryItem/12', tracked: true }, product: { id: 'gid://shopify/Product/2', status: 'ACTIVE', title: 'FRED' } }
 ];
 const calls = [];
+app.post('/admin/oauth/access_token', (req, res) => res.json({ access_token: 'mock-token', expires_in: 86399 }));
 app.post('/admin/api/:v/graphql.json', (req, res) => {
   const q = req.body.query; calls.push(q.slice(0, 60));
   if (q.includes('productVariants(first:250')) return res.json({ data: { productVariants: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: variants } } });
