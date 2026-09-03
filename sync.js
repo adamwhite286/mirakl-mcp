@@ -95,11 +95,6 @@ async function allShopifyVariants() {
   return out;
 }
 
-async function variantsByInventoryItem(inventoryItemGid) {
-  const d = await gql(`query($id:ID!){ inventoryItem(id:$id){ variant{ id sku price inventoryQuantity product{ status } } } }`, { id: inventoryItemGid });
-  return d.inventoryItem?.variant ? [d.inventoryItem.variant] : [];
-}
-
 async function variantBySku(sku) {
   const d = await gql(`query($q:String!){ productVariants(first:1, query:$q){ nodes{ id sku price product{ id title status } } } }`, { q: `sku:"${sku.replace(/"/g, '')}"` });
   return d.productVariants.nodes.find(v => v.sku === sku) || null;
@@ -179,20 +174,6 @@ export async function reconcileOffers() {
   note('info', `Reconcile: ${offers.length} B&Q offers, ${variants.length} Shopify variants, ${updates.length} to update`);
   await pushOffers(updates);
   return { offers: offers.length, variants: variants.length, updated: updates.length };
-}
-
-// Webhook-driven push for a handful of variants (only those that exist as B&Q offers).
-async function pushVariants(variants) {
-  const updates = [];
-  for (const v of variants) {
-    if (!v.sku) continue;
-    let offer;
-    try { offer = (await mirakl('GET', '/api/offers', { query: { sku: v.sku, max: 1 } })).offers?.[0]; } catch (e) { note('error', `offer lookup failed for ${v.sku}: ${e.message}`); continue; }
-    if (!offer || offer.shop_sku !== v.sku) continue;
-    const want = desiredOffer(v);
-    if (Number(offer.quantity) !== want.qty || Math.abs(Number(offer.price) - want.price) > 0.004) updates.push({ shop_sku: v.sku, ...want });
-  }
-  await pushOffers(updates);
 }
 
 // ---------- Orders: B&Q → Shopify ----------
@@ -299,17 +280,16 @@ export function verifyWebhook(rawBody, hmacHeader) {
   try { return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmacHeader || '')); } catch { return false; }
 }
 
+// A burst of webhooks (bulk edits fire one per product) must not become a burst of
+// Mirakl calls – that trips its rate limit (HTTP 429). Debounce into ONE reconcile.
+let webhookTimer = null;
 export async function handleWebhook(topic, payload) {
   state.counters.webhooks++;
-  try {
-    if (topic === 'inventory_levels/update') {
-      const gid = `gid://shopify/InventoryItem/${payload.inventory_item_id}`;
-      await pushVariants(await variantsByInventoryItem(gid));
-    } else if (topic === 'products/update') {
-      const status = String(payload.status || '').toUpperCase();
-      await pushVariants((payload.variants || []).map(v => ({ sku: v.sku, price: v.price, inventoryQuantity: v.inventory_quantity, product: { status } })));
-    }
-  } catch (e) { note('error', `webhook ${topic}: ${e.message}`); }
+  if (!['inventory_levels/update', 'products/update'].includes(topic)) return;
+  clearTimeout(webhookTimer);
+  webhookTimer = setTimeout(() => {
+    reconcileOffers().catch(e => note('error', `webhook reconcile: ${e.message}`));
+  }, 15000);
 }
 
 export async function ensureWebhooks() {
