@@ -164,7 +164,11 @@ async function pushOffers(updates) {
 export async function reconcileOffers() {
   const [offers, variants] = await Promise.all([allMiraklOffers(), allShopifyVariants()]);
   const bySku = new Map();
-  for (const v of variants) if (v.sku) { if (bySku.has(v.sku)) note('warn', `Duplicate SKU in Shopify: ${v.sku} – first one wins`); else bySku.set(v.sku, v); }
+  for (const v of variants) {
+    if (!v.sku || v.product?.status !== 'ACTIVE') continue; // archived/draft products never drive B&Q offers
+    if (bySku.has(v.sku)) note('warn', `Duplicate SKU on ACTIVE Shopify products: ${v.sku} – first one wins`);
+    else bySku.set(v.sku, v);
+  }
   const updates = [];
   for (const o of offers) {
     const v = bySku.get(o.shop_sku);
